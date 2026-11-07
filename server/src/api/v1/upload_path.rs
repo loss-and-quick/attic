@@ -410,6 +410,7 @@ pub(crate) async fn upload_session_part(
                 && !e.is_storage_not_found()
             {
                 tracing::warn!("Failed to clean up upload session part object: {}", e);
+                return;
             }
 
             if let Err(e) = UploadSessionPart::delete(upload_session_part::ActiveModel {
