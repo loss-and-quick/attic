@@ -598,9 +598,10 @@ fn spawn_finalize_upload_session(
         let result = loop {
             tokio::select! {
                 result = &mut finalize => break result,
-                _ = heartbeat.tick() => {
+                _ = async {
+                    heartbeat.tick().await;
                     heartbeat_upload_session_finalization(&state, &session_id).await;
-                }
+                } => {}
             }
         };
 
