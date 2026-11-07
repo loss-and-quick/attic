@@ -42,6 +42,11 @@ impl MigrationTrait for Migration {
                             .not_null(),
                     )
                     .col(
+                        ColumnDef::new(upload_session::Column::ChunkSize)
+                            .big_integer()
+                            .not_null(),
+                    )
+                    .col(
                         ColumnDef::new(upload_session::Column::State)
                             .string()
                             .not_null(),

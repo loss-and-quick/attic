@@ -276,6 +276,7 @@ pub(crate) async fn start_upload_session(
         cache_id: Set(cache.id),
         upload_info: Set(serde_json::to_string(&upload_info).map_err(ServerError::request_error)?),
         expected_parts: Set(i32::try_from(expected_parts).map_err(ServerError::request_error)?),
+        chunk_size: Set(i64::try_from(chunk_size).map_err(ServerError::request_error)?),
         state: Set(UploadSessionState::Uploading.as_str().to_string()),
         created_by: Set(req_state.auth.username().map(str::to_string)),
         created_at: Set(now),
@@ -341,6 +342,15 @@ pub(crate) async fn upload_session_part(
         return Err(ErrorKind::RequestError(anyhow!("Part sequence is out of range")).into());
     }
 
+    let chunk_size = usize::try_from(session.chunk_size).map_err(ServerError::database_error)?;
+    let offset = seq_usize
+        .checked_mul(chunk_size)
+        .ok_or(ErrorKind::InternalServerError)?;
+    let expected_size = upload_info
+        .nar_size
+        .checked_sub(offset)
+        .ok_or(ErrorKind::InternalServerError)?
+        .min(chunk_size);
     let backend = state.storage().await?;
 
     let key = format!(
@@ -414,11 +424,29 @@ pub(crate) async fn upload_session_part(
         }
     });
 
-    let stream = body
-        .into_data_stream()
-        .map(|r| r.map_err(|e| io::Error::other(e.to_string())));
-    let mut reader = StreamReader::new(stream);
-    backend.upload_file(key, &mut reader).await?;
+    let mut received = 0usize;
+    let result = {
+        let received = &mut received;
+        let stream: futures::stream::BoxStream<'_, io::Result<Bytes>> = Box::pin(try_stream! {
+            let mut stream = body.into_data_stream();
+            while let Some(data) = stream.next().await {
+                let data = data.map_err(|e| io::Error::other(e.to_string()))?;
+                *received = received.saturating_add(data.len());
+                if *received > expected_size {
+                    Err(io::Error::new(io::ErrorKind::InvalidData, "Part exceeds negotiated size"))?;
+                }
+                yield data;
+            }
+        });
+        let mut reader = StreamReader::new(stream);
+        backend.upload_file(key, &mut reader).await
+    };
+    if received != expected_size {
+        return Err(
+            ErrorKind::RequestError(anyhow!("Part length does not match negotiated size")).into(),
+        );
+    }
+    result?;
 
     let session = load_session(database, session_id).await?;
     if session.state != UploadSessionState::Uploading.as_str() || Utc::now() > session.expires_at {

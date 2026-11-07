@@ -43,6 +43,8 @@ pub struct Model {
     /// Number of expected transport parts.
     pub expected_parts: i32,
 
+    pub chunk_size: i64,
+
     /// Session state.
     pub state: String,
 
